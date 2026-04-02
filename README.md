@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/@cashmint/sdk)](https://www.npmjs.com/package/@cashmint/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-The official TypeScript SDK for [CashMintStandard](https://github.com/BCH-CashMint/cashmintstandard) — a BCMR extension profile for NFTs on Bitcoin Cash CashTokens. The SDK covers the full lifecycle of a CMS-compliant token: validating per-token metadata, generating BCMR registry files, resolving on-chain token data, and minting NFTs directly from TypeScript.
+The official SDK for [CashMintStandard](https://github.com/BCH-CashMint/cashmintstandard) NFTs on Bitcoin Cash CashTokens, written in TypeScript with full ESM and CJS support. The SDK covers the full lifecycle of a CMS-compliant token: validating per-token metadata, generating BCMR registry files, resolving on-chain token data, and minting NFTs directly from JavaScript or TypeScript.
 
 ## Installation
 
