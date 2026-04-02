@@ -1,0 +1,534 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cashmintstandard.org/schema/v1.0.0.json",
+  "title": "CashMintStandard",
+  "description": "CashMintStandard v1.0 — Per-token NFT metadata schema for the Bitcoin Cash CashTokens ecosystem. A BCMR extension profile defining per-token metadata, royalty conventions, collection rules, and an optional AI agent hook.",
+  "type": "object",
+
+  "required": ["$schema", "cms_version", "name", "description", "image"],
+
+  "additionalProperties": false,
+
+  "properties": {
+
+    "$schema": {
+      "type": "string",
+      "description": "Must be the canonical CashMintStandard schema URI. Identifies this file as a CMS-compliant token.",
+      "const": "https://cashmintstandard.org/schema/v1.0.0.json"
+    },
+
+    "cms_version": {
+      "type": "string",
+      "description": "Semantic version of the CashMintStandard spec this token was minted against. Must be '1.0'.",
+      "enum": ["1.0"],
+      "examples": ["1.0"]
+    },
+
+    "name": {
+      "type": "string",
+      "description": "Human-readable name of this specific token. Should include the collection name and token identifier. Max 64 characters recommended for wallet display.",
+      "minLength": 1,
+      "maxLength": 128,
+      "examples": ["Mystic Tiger #042"]
+    },
+
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of this specific token. First 140 characters shown in compact views. Full text shown in detail views.",
+      "minLength": 1,
+      "maxLength": 2048,
+      "examples": ["A legendary fire tiger from the Mystic Tigers collection."]
+    },
+
+    "image": {
+      "type": "string",
+      "description": "URI pointing to the token's primary image. MUST be an IPFS URI for immutability. HTTPS fallback allowed only for mutable tokens. Square aspect ratio recommended (400x400px minimum).",
+      "format": "uri",
+      "pattern": "^(ipfs://|https://)",
+      "examples": ["ipfs://QmXyz123..."]
+    },
+
+    "animation_url": {
+      "type": "string",
+      "description": "URI pointing to an animated or interactive version of the asset. Supported formats: mp4, webm, gif, glb, html. IPFS preferred.",
+      "format": "uri",
+      "pattern": "^(ipfs://|https://)",
+      "examples": ["ipfs://QmAnimated123..."]
+    },
+
+    "external_url": {
+      "type": "string",
+      "description": "URL to the project's page for this specific token. Rendered as a clickable link in wallets and marketplaces.",
+      "format": "uri",
+      "pattern": "^https://",
+      "examples": ["https://mystictigers.io/token/42"]
+    },
+
+    "attributes": {
+      "type": "array",
+      "description": "Array of trait objects defining the characteristics of this token. Absent if the token has no traits. MUST NOT be an empty array — omit entirely if unused.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["trait_type", "value"],
+        "additionalProperties": false,
+        "properties": {
+          "trait_type": {
+            "type": "string",
+            "description": "The category of this trait.",
+            "minLength": 1,
+            "maxLength": 64,
+            "examples": ["Background", "Eyes", "Level", "Birthday"]
+          },
+          "value": {
+            "description": "The value of this trait. String for categorical traits. Number for numeric or date traits.",
+            "oneOf": [
+              { "type": "string", "minLength": 1, "maxLength": 128 },
+              { "type": "number" }
+            ],
+            "examples": ["Fire", "Legendary", 5, 1546360800]
+          },
+          "display_type": {
+            "type": "string",
+            "description": "How wallets and marketplaces should render this trait's value. Omit for standard string traits.",
+            "enum": ["number", "date", "boost_number", "boost_percentage"],
+            "examples": ["number", "date"]
+          }
+        }
+      },
+      "examples": [
+        [
+          { "trait_type": "Background", "value": "Volcano" },
+          { "trait_type": "Eyes", "value": "Fire" },
+          { "trait_type": "Level", "value": 5, "display_type": "number" },
+          { "trait_type": "Birthday", "value": 1546360800, "display_type": "date" }
+        ]
+      ]
+    },
+
+    "media": {
+      "type": "array",
+      "description": "Additional media files associated with this token. Absent if no supplementary files. MUST NOT be an empty array.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["uri", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "uri": {
+            "type": "string",
+            "format": "uri",
+            "description": "URI of the media file. IPFS preferred.",
+            "examples": ["ipfs://QmMedia123..."]
+          },
+          "type": {
+            "type": "string",
+            "description": "MIME type of the media file.",
+            "examples": ["image/png", "video/mp4", "audio/mp3", "model/gltf-binary"]
+          },
+          "cdn": {
+            "type": "boolean",
+            "description": "Whether this URI is served from a CDN for faster access. A CDN copy does not replace the IPFS canonical source.",
+            "default": false
+          }
+        }
+      }
+    },
+
+    "royalty": {
+      "type": "object",
+      "description": "Royalty convention for secondary sales. Not protocol-enforced — marketplaces adopting CashMintStandard are expected to honor this. Absent if no royalty is requested.",
+      "required": ["bps", "address"],
+      "additionalProperties": false,
+      "properties": {
+        "bps": {
+          "type": "integer",
+          "description": "Royalty amount in basis points. 100 bps = 1%. Max 1000 (10%).",
+          "minimum": 1,
+          "maximum": 1000,
+          "examples": [500]
+        },
+        "address": {
+          "type": "string",
+          "description": "Primary Bitcoin Cash address to receive royalty payments. cashaddr format required.",
+          "pattern": "^bitcoincash:[a-z0-9]{42,}$",
+          "examples": ["bitcoincash:qr3kqekcd..."]
+        },
+        "splits": {
+          "type": "array",
+          "description": "Optional split of royalty among multiple recipients. Shares must sum to 100. If absent, full royalty goes to address.",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["address", "share"],
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "string",
+                "pattern": "^bitcoincash:[a-z0-9]{42,}$",
+                "description": "BCH cashaddr of this recipient."
+              },
+              "share": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 99,
+                "description": "Percentage share of the total royalty amount. All shares must sum to 100."
+              }
+            }
+          }
+        }
+      },
+      "examples": [
+        {
+          "bps": 500,
+          "address": "bitcoincash:qr3kqekcd...",
+          "splits": [
+            { "address": "bitcoincash:qr3kqekcd...", "share": 80 },
+            { "address": "bitcoincash:qp9xyzabc...", "share": 20 }
+          ]
+        }
+      ]
+    },
+
+    "creators": {
+      "type": "array",
+      "description": "Verified creator attribution. Each entry is a BCH address with a percentage share of credit. Shares should sum to 100. Absent if no explicit attribution needed.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["address", "share"],
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string",
+            "pattern": "^bitcoincash:[a-z0-9]{42,}$",
+            "description": "BCH cashaddr of this creator."
+          },
+          "share": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Percentage attribution share."
+          },
+          "name": {
+            "type": "string",
+            "description": "Optional display name for this creator.",
+            "maxLength": 64
+          },
+          "uri": {
+            "type": "string",
+            "format": "uri",
+            "description": "Optional URI to the creator's profile or website."
+          }
+        }
+      }
+    },
+
+    "collection": {
+      "type": "object",
+      "description": "Information about the collection this token belongs to. Absent for one-of-one tokens with no collection context.",
+      "required": ["name", "category_id"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Display name of the collection.",
+          "minLength": 1,
+          "maxLength": 64,
+          "examples": ["Mystic Tigers"]
+        },
+        "category_id": {
+          "type": "string",
+          "description": "The CashTokens category ID (32-byte txid hex) of this collection. Links the off-chain metadata to the on-chain token family.",
+          "pattern": "^[0-9a-f]{64}$",
+          "examples": ["89cad9e3e34280eb1e8bc420542c00a7fcc01002b663dbf7f38bceddf80e680c"]
+        },
+        "max_supply": {
+          "type": "integer",
+          "description": "Maximum number of tokens that can ever exist in this collection. Absent means unlimited or unknown.",
+          "minimum": 1,
+          "examples": [1000]
+        },
+        "token_serial": {
+          "type": "integer",
+          "description": "This token's sequential number within the collection. Zero-indexed.",
+          "minimum": 0,
+          "examples": [42]
+        }
+      }
+    },
+
+    "extensions": {
+      "type": "object",
+      "description": "Optional extension namespace. Absent for tokens that use no extensions. Third parties may add their own keys alongside 'ai_hook'. Unknown keys MUST be ignored by validators.",
+      "minProperties": 1,
+      "additionalProperties": true,
+      "properties": {
+
+        "ai_hook": {
+          "type": "object",
+          "description": "AI agent hook specification. Defines the relationship between this NFT and an AI agent. Optional. Wallets that do not implement ai_hook MUST ignore this block entirely.",
+          "required": ["version", "type"],
+          "additionalProperties": false,
+          "properties": {
+
+            "version": {
+              "type": "string",
+              "description": "Version of the ai_hook sub-schema.",
+              "enum": ["1.0"],
+              "examples": ["1.0"]
+            },
+
+            "type": {
+              "type": "string",
+              "description": "Declares the NFT's relationship to the AI agent. 'gateway' = NFT grants access to an agent. 'identity' = NFT IS the agent's on-chain identity.",
+              "enum": ["gateway", "identity"]
+            },
+
+            "endpoint": {
+              "type": "object",
+              "description": "Where to reach the AI agent. Required for gateway and identity types.",
+              "required": ["uri", "protocol", "auth"],
+              "additionalProperties": false,
+              "properties": {
+                "uri": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "The agent's API endpoint URI.",
+                  "examples": ["https://api.mystictigers.io/agent/v1", "agent://cashmint.example.com/agent/042"]
+                },
+                "protocol": {
+                  "type": "string",
+                  "description": "Communication protocol. 'https' for standard REST. 'mcp' for Model Context Protocol. 'a2a' for Agent-to-Agent protocol.",
+                  "enum": ["https", "mcp", "a2a"],
+                  "examples": ["https"]
+                },
+                "auth": {
+                  "type": "string",
+                  "description": "Authentication method the agent uses to verify the caller. 'bearer_ownership' = prove UTXO ownership via signed challenge. 'none' = open access. 'api_key' = static key. 'signed_challenge' = custom challenge-response.",
+                  "enum": ["bearer_ownership", "none", "api_key", "signed_challenge"],
+                  "examples": ["bearer_ownership"]
+                },
+                "network": {
+                  "type": "string",
+                  "description": "Which BCH network this endpoint is active on.",
+                  "enum": ["mainnet", "chipnet", "custom"],
+                  "default": "mainnet"
+                }
+              }
+            },
+
+            "capabilities": {
+              "type": "array",
+              "description": "List of capabilities this agent exposes. Wallets use this to render relevant UI affordances.",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "enum": ["chat", "generate", "transact", "sign", "query", "automate"]
+              },
+              "examples": [["chat", "generate"]]
+            },
+
+            "model": {
+              "type": "object",
+              "description": "Describes the underlying AI model powering this agent. Informational only.",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Model identifier.",
+                  "examples": ["claude-sonnet-4-6"]
+                },
+                "provider": {
+                  "type": "string",
+                  "description": "Model provider name.",
+                  "examples": ["anthropic", "openai", "mistral"]
+                },
+                "version": {
+                  "type": "string",
+                  "description": "Specific model version string.",
+                  "examples": ["4.6"]
+                },
+                "modalities": {
+                  "type": "array",
+                  "description": "Input/output modalities this model supports.",
+                  "items": {
+                    "type": "string",
+                    "enum": ["text", "image", "audio", "video", "code"]
+                  }
+                }
+              }
+            },
+
+            "identity": {
+              "type": "object",
+              "description": "Agent identity declaration. Required when type is 'identity'. The NFT represents this agent's on-chain anchor.",
+              "required": ["agent_name", "did", "public_key"],
+              "additionalProperties": false,
+              "properties": {
+                "agent_name": {
+                  "type": "string",
+                  "description": "Human-readable name for this agent.",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "examples": ["Mystic Tiger Agent #042"]
+                },
+                "did": {
+                  "type": "string",
+                  "description": "Decentralized Identifier for this agent. Format: did:bch:{category_id}:{token_serial}. Follows W3C DID spec pattern, BCH-native.",
+                  "pattern": "^did:bch:[0-9a-f]{64}:[0-9]+$",
+                  "examples": ["did:bch:89cad9e3e34280eb1e8bc420542c00a7fcc01002b663dbf7f38bceddf80e680c:42"]
+                },
+                "public_key": {
+                  "type": "string",
+                  "description": "Agent's compressed public key (33 bytes, hex). Used to verify messages signed by this agent. Owner of the UTXO can rotate this key by updating the mutable token's commitment.",
+                  "pattern": "^(02|03)[0-9a-f]{64}$",
+                  "examples": ["03a1b2c3d4e5f6..."]
+                },
+                "reputation_uri": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "Optional URI pointing to a verifiable reputation record for this agent.",
+                  "examples": ["ipfs://QmReputation123..."]
+                }
+              }
+            },
+
+            "ownership_gate": {
+              "type": "object",
+              "description": "Specifies how the agent verifies that the caller owns this NFT's UTXO. Required when endpoint.auth is 'bearer_ownership' or 'signed_challenge'.",
+              "required": ["method", "challenge_endpoint", "category_id"],
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "type": "string",
+                  "description": "Verification method. 'utxo_proof' = caller signs a server-issued nonce with the private key controlling this token's UTXO. Agent verifies the signature matches the UTXO locking script. No oracle required.",
+                  "enum": ["utxo_proof"],
+                  "examples": ["utxo_proof"]
+                },
+                "challenge_endpoint": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "URL where the caller requests a nonce to sign. Agent issues a random nonce, caller signs with UTXO key, agent verifies.",
+                  "examples": ["https://api.mystictigers.io/challenge"]
+                },
+                "category_id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "The CashTokens category ID used to locate the UTXO for ownership verification."
+                },
+                "token_serial": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "The specific token serial number within the category. Used with category_id to uniquely identify the UTXO.",
+                  "examples": [42]
+                }
+              }
+            },
+
+            "update_policy": {
+              "type": "object",
+              "description": "For tokens with CashTokens 'mutable' capability. Declares which ai_hook fields can be updated by the UTXO holder, and which are permanently fixed.",
+              "required": ["mutable_fields", "immutable_fields", "update_auth"],
+              "additionalProperties": false,
+              "properties": {
+                "mutable_fields": {
+                  "type": "array",
+                  "description": "JSON paths of ai_hook fields that the UTXO owner may update.",
+                  "items": { "type": "string" },
+                  "examples": [["endpoint.uri", "model", "capabilities"]]
+                },
+                "immutable_fields": {
+                  "type": "array",
+                  "description": "JSON paths of ai_hook fields that are permanently fixed at mint time.",
+                  "items": { "type": "string" },
+                  "examples": [["identity.did", "identity.public_key"]]
+                },
+                "update_auth": {
+                  "type": "string",
+                  "description": "Who may perform updates. 'utxo_owner' = only the current holder of the mutable token UTXO.",
+                  "enum": ["utxo_owner"],
+                  "examples": ["utxo_owner"]
+                }
+              }
+            }
+
+          },
+
+          "if": { "properties": { "type": { "const": "identity" } } },
+          "then": { "required": ["endpoint", "identity", "ownership_gate"] },
+          "else": {
+            "if": { "properties": { "type": { "const": "gateway" } } },
+            "then": { "required": ["endpoint", "ownership_gate"] }
+          }
+        }
+
+      }
+    }
+
+  },
+
+  "examples": [
+    {
+      "$schema": "https://cashmintstandard.org/schema/v1.0.0.json",
+      "cms_version": "1.0",
+      "name": "Mountain Sunset",
+      "description": "A digital painting of a mountain at dusk.",
+      "image": "ipfs://QmSimple123..."
+    },
+    {
+      "$schema": "https://cashmintstandard.org/schema/v1.0.0.json",
+      "cms_version": "1.0",
+      "name": "Mystic Tiger #042",
+      "description": "A legendary fire tiger from the Mystic Tigers collection.",
+      "image": "ipfs://QmImage123...",
+      "attributes": [
+        { "trait_type": "Background", "value": "Volcano" },
+        { "trait_type": "Eyes", "value": "Fire" },
+        { "trait_type": "Rarity", "value": "Legendary" },
+        { "trait_type": "Level", "value": 5, "display_type": "number" }
+      ],
+      "royalty": {
+        "bps": 500,
+        "address": "bitcoincash:qr3kqekcd...",
+        "splits": [
+          { "address": "bitcoincash:qr3kqekcd...", "share": 80 },
+          { "address": "bitcoincash:qp9xyzabc...", "share": 20 }
+        ]
+      },
+      "creators": [
+        { "address": "bitcoincash:qr3kqekcd...", "share": 100, "name": "TigerStudio" }
+      ],
+      "collection": {
+        "name": "Mystic Tigers",
+        "category_id": "89cad9e3e34280eb1e8bc420542c00a7fcc01002b663dbf7f38bceddf80e680c",
+        "max_supply": 1000,
+        "token_serial": 42
+      },
+      "extensions": {
+        "ai_hook": {
+          "version": "1.0",
+          "type": "gateway",
+          "endpoint": {
+            "uri": "https://api.mystictigers.io/agent/v1",
+            "protocol": "https",
+            "auth": "bearer_ownership",
+            "network": "mainnet"
+          },
+          "capabilities": ["chat", "generate"],
+          "model": {
+            "name": "claude-sonnet-4-6",
+            "provider": "anthropic",
+            "modalities": ["text", "image"]
+          },
+          "ownership_gate": {
+            "method": "utxo_proof",
+            "challenge_endpoint": "https://api.mystictigers.io/challenge",
+            "category_id": "89cad9e3e34280eb1e8bc420542c00a7fcc01002b663dbf7f38bceddf80e680c",
+            "token_serial": 42
+          }
+        }
+      }
+    }
+  ]
+}
