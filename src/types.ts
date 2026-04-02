@@ -251,8 +251,8 @@ export interface MintParams {
   encodingFormat: "sequential" | "cid_serial";
   /** Fulcrum / ElectrumX JSON-RPC endpoint URL for broadcasting */
   fulcrumUrl: string;
-  /** web3.storage UCAN delegation proof string (required for IPFS pinning) */
-  ipfsToken?: string;
+  /** Pinata JWT secret key (required for IPFS pinning via pinata.cloud) */
+  pinataJwt?: string;
 }
 
 export interface MintResult {

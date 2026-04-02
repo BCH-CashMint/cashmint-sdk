@@ -10,16 +10,19 @@ import {
   binToHex,
   NonFungibleTokenCapability,
 } from "@bitauth/libauth";
-import { create as createW3Client } from "@web3-storage/w3up-client";
-import { StoreMemory } from "@web3-storage/w3up-client/stores/memory";
-import { parse as parseProof } from "@web3-storage/w3up-client/proof";
+import tls from "node:tls";
 import { CID } from "multiformats/cid";
 import { validate } from "./validate.js";
 import type { MintParams, MintResult } from "./types.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const DUST_SATOSHIS = 546n;
+// CashTokens outputs require a higher minimum value than plain P2PKH.
+// Standard BCH dust = 546 sat; token-bearing outputs = 1000 sat minimum.
+const DUST_SATOSHIS = 1000n;
+// The minting token output keeps a reserve so it can fund the next mint.
+// Needs at least 2×DUST + FEE_ESTIMATE_INITIAL (≈2600) for the next call.
+const MINTING_RESERVE = 5000n;
 // Conservative initial fee estimate (sats). Adjusted to the real tx size in
 // the second pass. Sized to cover a cid_serial (40-byte commitment) tx safely.
 const FEE_ESTIMATE_INITIAL = 600n;
@@ -96,16 +99,25 @@ function encodeCidSerial(serial: number, cidString: string): Uint8Array {
 
 // ─── IPFS pinning ─────────────────────────────────────────────────────────────
 
-async function pinToIPFS(json: string, ipfsToken: string): Promise<string> {
-  const client = await createW3Client({ store: new StoreMemory() });
-  // ipfsToken is a UCAN delegation proof granting upload access to a space
-  const proof = await parseProof(ipfsToken);
-  const space = await client.addSpace(proof);
-  await client.setCurrentSpace(space.did());
+async function pinToIPFS(json: object, pinataJwt: string): Promise<string> {
+  const resp = await fetch("https://api.pinata.cloud/pinning/pinJSONToIPFS", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${pinataJwt}`,
+    },
+    body: JSON.stringify({
+      pinataContent: json,
+      pinataMetadata: { name: "metadata.json" },
+    }),
+  });
 
-  const file = new File([json], "metadata.json", { type: "application/json" });
-  const cid = await client.uploadFile(file);
-  return cid.toString();
+  if (!resp.ok) {
+    throw new Error(`Pinata pin failed: ${resp.status} ${resp.statusText}`);
+  }
+
+  const data = (await resp.json()) as { IpfsHash: string };
+  return data.IpfsHash;
 }
 
 // ─── Transaction building + signing ──────────────────────────────────────────
@@ -174,10 +186,11 @@ function buildSignedTx(p: BuildSignedTxParams): Uint8Array {
           },
         },
       },
-      // Output 1: minting token returned to preserve capability
+      // Output 1: minting token returned to preserve capability.
+      // Holds MINTING_RESERVE sats so the next mint() call has enough to spend.
       {
         lockingBytecode,
-        valueSatoshis: DUST_SATOSHIS,
+        valueSatoshis: MINTING_RESERVE,
         token: {
           amount: 0n,
           category: categoryBytes,
@@ -248,42 +261,61 @@ function buildSignedTx(p: BuildSignedTxParams): Uint8Array {
 
 // ─── Broadcast ───────────────────────────────────────────────────────────────
 
+// Broadcasts via the Electrum TLS protocol (line-delimited JSON over TLS TCP).
+// This is the standard Fulcrum interface — port 50002 on most nodes.
 async function broadcast(txHex: string, fulcrumUrl: string): Promise<string> {
-  const resp = await fetch(fulcrumUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "blockchain.transaction.broadcast",
-      params: [txHex],
-    }),
+  const url = new URL(fulcrumUrl);
+  const host = url.hostname;
+  const port = parseInt(url.port || "50002", 10);
+
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect(
+      { host, port, rejectUnauthorized: false },
+      () => {
+        socket.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "blockchain.transaction.broadcast",
+            params: [txHex],
+          }) + "\n"
+        );
+      }
+    );
+
+    let buf = "";
+    socket.on("data", (chunk: Buffer) => {
+      buf += chunk.toString();
+      const newline = buf.indexOf("\n");
+      if (newline === -1) return;
+      socket.destroy();
+      try {
+        const msg = JSON.parse(buf.slice(0, newline)) as {
+          result?: string;
+          error?: { code: number; message: string };
+        };
+        if (msg.error !== undefined) {
+          reject(new Error(
+            `Fulcrum broadcast RPC error ${msg.error.code}: ${msg.error.message}`
+          ));
+        } else if (typeof msg.result !== "string") {
+          reject(new Error(
+            `Fulcrum returned unexpected broadcast result: ${JSON.stringify(msg.result)}`
+          ));
+        } else {
+          resolve(msg.result);
+        }
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    socket.on("error", (err: Error) => reject(err));
+    socket.setTimeout(30_000, () => {
+      socket.destroy();
+      reject(new Error("Fulcrum broadcast timed out"));
+    });
   });
-
-  if (!resp.ok) {
-    throw new Error(
-      `Fulcrum broadcast HTTP error: ${resp.status} ${resp.statusText}`
-    );
-  }
-
-  const rpc = (await resp.json()) as {
-    result?: string;
-    error?: { code: number; message: string };
-  };
-
-  if (rpc.error !== undefined) {
-    throw new Error(
-      `Fulcrum broadcast RPC error ${rpc.error.code}: ${rpc.error.message}`
-    );
-  }
-
-  if (typeof rpc.result !== "string") {
-    throw new Error(
-      `Fulcrum returned unexpected broadcast result: ${JSON.stringify(rpc.result)}`
-    );
-  }
-
-  return rpc.result; // txid
 }
 
 // ─── mint ─────────────────────────────────────────────────────────────────────
@@ -310,10 +342,10 @@ export async function mint(params: MintParams): Promise<MintResult> {
     wif,
     encodingFormat,
     fulcrumUrl,
-    ipfsToken,
+    pinataJwt,
   } = params;
 
-  // ── Step 1: validate metadata ──────────────────────────────────────────────
+  // ── Step 1: validate all inputs before any async work ────────────────────
   const validation = validate(metadata);
   if (!validation.valid) {
     throw new Error(
@@ -321,11 +353,21 @@ export async function mint(params: MintParams): Promise<MintResult> {
     );
   }
 
-  // ── Step 2: pin to IPFS ───────────────────────────────────────────────────
-  if (ipfsToken === undefined || ipfsToken === "") {
-    throw new Error("ipfsToken is required for IPFS pinning");
+  if (pinataJwt === undefined || pinataJwt === "") {
+    throw new Error("pinataJwt is required for IPFS pinning");
   }
-  const cid = await pinToIPFS(JSON.stringify(metadata, null, 2), ipfsToken);
+
+  const inputSatoshis = BigInt(mintingUtxo.satoshis);
+  const minRequired = DUST_SATOSHIS + MINTING_RESERVE + FEE_ESTIMATE_INITIAL;
+  if (inputSatoshis < minRequired) {
+    throw new Error(
+      `Insufficient satoshis: minting UTXO has ${inputSatoshis}, ` +
+        `needs at least ${minRequired} (NFT dust + minting reserve + fee estimate)`
+    );
+  }
+
+  // ── Step 2: pin to IPFS ───────────────────────────────────────────────────
+  const cid = await pinToIPFS(metadata, pinataJwt);
 
   // ── Step 3: encode commitment ─────────────────────────────────────────────
   const nftCommitment = encodeCommitment(serial, cid, encodingFormat);
@@ -339,29 +381,24 @@ export async function mint(params: MintParams): Promise<MintResult> {
     throw new Error(`Invalid WIF private key: ${wifResult}`);
   }
   const { privateKey } = wifResult;
-  const publicKey = secp256k1.derivePublicKeyCompressed(privateKey);
+  // WIF starting with '9' (testnet) or '5' (mainnet) encodes an uncompressed key.
+  const isUncompressed = wif.startsWith("9") || wif.startsWith("5");
+  const publicKey = isUncompressed
+    ? secp256k1.derivePublicKeyUncompressed(privateKey)
+    : secp256k1.derivePublicKeyCompressed(privateKey);
   if (typeof publicKey === "string") {
     throw new Error(`Failed to derive public key: ${publicKey}`);
   }
   const lockingBytecode = publicKeyToP2pkhLockingBytecode({ publicKey });
 
-  // CashTokens uses wire-format byte order for txids (reversed from display)
-  const categoryBytes = hexToBin(categoryId).reverse();
-  const outpointHash = hexToBin(mintingUtxo.txid).reverse();
+  // libauth's encodeTransaction reverses outpointTransactionHash and token.category
+  // internally when serializing, so pass display-format bytes as-is (no reversal).
+  const categoryBytes = hexToBin(categoryId);
+  const outpointHash = hexToBin(mintingUtxo.txid);
   const mintingCommitment =
     mintingUtxo.commitment !== ""
       ? hexToBin(mintingUtxo.commitment)
       : new Uint8Array(0);
-  const inputSatoshis = BigInt(mintingUtxo.satoshis);
-
-  // Guard: need at least 2× dust + estimated fee
-  const minRequired = DUST_SATOSHIS * 2n + FEE_ESTIMATE_INITIAL;
-  if (inputSatoshis < minRequired) {
-    throw new Error(
-      `Insufficient satoshis: minting UTXO has ${inputSatoshis}, ` +
-        `needs at least ${minRequired} (2× dust + fee estimate)`
-    );
-  }
 
   const buildParams: Omit<BuildSignedTxParams, "changeSatoshis"> = {
     privateKey,
@@ -375,15 +412,18 @@ export async function mint(params: MintParams): Promise<MintResult> {
     nftCommitment,
   };
 
+  // Total reserved for token outputs: NFT dust + minting reserve
+  const tokenOutputsTotal = DUST_SATOSHIS + MINTING_RESERVE;
+
   // Pass 1: sign with conservative estimate to measure real tx size
   const pass1Bytes = buildSignedTx({
     ...buildParams,
-    changeSatoshis: inputSatoshis - DUST_SATOSHIS * 2n - FEE_ESTIMATE_INITIAL,
+    changeSatoshis: inputSatoshis - tokenOutputsTotal - FEE_ESTIMATE_INITIAL,
   });
 
   // Actual fee = 1 sat/byte (rounded up); minimum 1 sat
   const actualFee = BigInt(pass1Bytes.length);
-  const finalChange = inputSatoshis - DUST_SATOSHIS * 2n - actualFee;
+  const finalChange = inputSatoshis - tokenOutputsTotal - actualFee;
 
   if (finalChange < 0n) {
     throw new Error(

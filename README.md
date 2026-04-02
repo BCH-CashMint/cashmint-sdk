@@ -1,7 +1,6 @@
 # @cashmint/sdk
 
-[![Priority 1](https://img.shields.io/badge/Priority%201-complete-brightgreen)](#)
-[![Priority 2](https://img.shields.io/badge/Priority%202-in%20progress-yellow)](#)
+[![npm](https://img.shields.io/npm/v/@cashmint/sdk)](https://www.npmjs.com/package/@cashmint/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 The official TypeScript SDK for [CashMintStandard](https://github.com/BCH-CashMint/cashmintstandard) — a BCMR extension profile for NFTs on Bitcoin Cash CashTokens. The SDK covers the full lifecycle of a CMS-compliant token: validating per-token metadata, generating BCMR registry files, resolving on-chain token data, and minting NFTs directly from TypeScript.
@@ -83,7 +82,7 @@ console.log(token.commitment);          // hex commitment bytes from on-chain UT
 
 ### mint()
 
-Mint a CMS-compliant NFT on Bitcoin Cash. Validates metadata, pins the JSON to IPFS via web3.storage, encodes the on-chain commitment, builds and signs the BCH transaction with libauth, and broadcasts via a Fulcrum ElectrumX node.
+Mint a CMS-compliant NFT on Bitcoin Cash. Validates metadata, pins the JSON to IPFS via Pinata, encodes the on-chain commitment, builds and signs the BCH transaction with libauth, and broadcasts via a Fulcrum ElectrumX node.
 
 ```ts
 import { mint } from "@cashmint/sdk";
@@ -111,8 +110,8 @@ const result = await mint({
   },
   wif: process.env.MINTER_WIF!,
   encodingFormat: "sequential", // or "cid_serial"
-  fulcrumUrl: "https://fulcrum.greyh.at",
-  ipfsToken: process.env.W3_UCAN_PROOF!,
+  fulcrumUrl: "chipnet.imaginary.cash:50002",
+  pinataJwt: process.env.PINATA_JWT!,
 });
 
 console.log("txid:", result.txid);
@@ -120,7 +119,7 @@ console.log("cid:", result.cid);
 console.log("commitment:", result.commitment);
 ```
 
-**`ipfsToken`** is a [UCAN delegation proof](https://web3.storage/docs/how-to/upload/#bring-your-own-agent) from web3.storage that grants upload access to your space.
+**`pinataJwt`** is a Pinata JWT (Bearer token) from your [Pinata](https://pinata.cloud) account, used to pin metadata JSON to IPFS.
 
 **`encodingFormat`** controls the on-chain commitment bytes:
 - `"sequential"` — serial as a minimal little-endian BCH VM number (1–4 bytes)

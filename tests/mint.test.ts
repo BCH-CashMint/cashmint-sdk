@@ -2,31 +2,39 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { CID } from "multiformats/cid";
 
 // ─── Hoisted mock constants ───────────────────────────────────────────────────
-// vi.mock() calls are hoisted BEFORE module-level code, so constants used
-// inside factory functions must be hoisted too with vi.hoisted().
 const { MOCK_CID, MOCK_TXID } = vi.hoisted(() => ({
   MOCK_CID: "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
   MOCK_TXID: "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233",
 }));
 
-// ─── Mock web3.storage ───────────────────────────────────────────────────────
-// Plain async functions (no vi.fn()) are used here so that vi.restoreAllMocks()
-// in afterEach does not clear these implementations between tests.
-
-vi.mock("@web3-storage/w3up-client", () => ({
-  create: async () => ({
-    addSpace: async () => ({ did: () => "did:key:testspace" }),
-    setCurrentSpace: async () => undefined,
-    uploadFile: async () => ({ toString: () => MOCK_CID }),
-  }),
+// ─── Mock node:tls ───────────────────────────────────────────────────────────
+// Simulates a Fulcrum Electrum TLS connection returning a configurable response.
+// tlsResponse is updated per-test to simulate success/error scenarios.
+const tlsState = vi.hoisted(() => ({
+  response: "" as string, // set before each test
 }));
 
-vi.mock("@web3-storage/w3up-client/stores/memory", () => ({
-  StoreMemory: function StoreMemory() { return {}; },
-}));
-
-vi.mock("@web3-storage/w3up-client/proof", () => ({
-  parse: async () => ({ type: "mock-proof" }),
+vi.mock("node:tls", () => ({
+  default: {
+    connect: (_opts: unknown, connectCb: () => void) => {
+      const handlers: Record<string, (arg?: unknown) => void> = {};
+      const socket = {
+        write: (_data: string) => {
+          // Deliver the configured response asynchronously after write
+          setTimeout(() => handlers["data"]?.(Buffer.from(tlsState.response + "\n")), 0);
+        },
+        on: (event: string, handler: (arg?: unknown) => void) => {
+          handlers[event] = handler;
+          return socket;
+        },
+        destroy: () => {},
+        setTimeout: () => {},
+      };
+      // Simulate async TLS handshake completing
+      setTimeout(connectCb, 0);
+      return socket;
+    },
+  },
 }));
 
 // ─── Source under test ────────────────────────────────────────────────────────
@@ -62,13 +70,13 @@ function makeParams(overrides: Partial<MintParams> = {}): MintParams {
     mintingUtxo: {
       txid: TEST_TXID,
       vout: 0,
-      satoshis: 5000,
+      satoshis: 10000,
       commitment: "",
     },
     wif: TEST_WIF,
     encodingFormat: "sequential",
-    fulcrumUrl: "https://fulcrum.test",
-    ipfsToken: "test-ucan-proof-token",
+    fulcrumUrl: "https://fulcrum.test:50002",
+    pinataJwt: "test-pinata-jwt",
     ...overrides,
   };
 }
@@ -95,8 +103,6 @@ describe("encodeCommitment() — sequential", () => {
   });
 
   it("encodes serial 128 as [0x80, 0x00] (sign-bit padding)", () => {
-    // 0x80 has its high bit set, which would be interpreted as negative in BCH
-    // VM numbers — so an extra 0x00 byte is appended to preserve positive sign.
     expect(encodeCommitment(128, MOCK_CID, "sequential")).toEqual(
       new Uint8Array([0x80, 0x00])
     );
@@ -127,7 +133,6 @@ describe("encodeCommitment() — sequential", () => {
   });
 
   it("encodes serial 32768 (0x8000) with sign-bit padding → 3 bytes", () => {
-    // [0x00, 0x80] high bit of 0x80 is set → needs padding → [0x00, 0x80, 0x00]
     expect(encodeCommitment(32768, MOCK_CID, "sequential")).toEqual(
       new Uint8Array([0x00, 0x80, 0x00])
     );
@@ -177,8 +182,8 @@ describe("encodeCommitment() — cid_serial", () => {
   it("same CID → identical bytes 4-39 regardless of serial", () => {
     const a = encodeCommitment(1, MOCK_CID, "cid_serial");
     const b = encodeCommitment(2, MOCK_CID, "cid_serial");
-    expect(a.slice(0, 4)).not.toEqual(b.slice(0, 4)); // serial differs
-    expect(a.slice(4)).toEqual(b.slice(4));            // digest+flags same
+    expect(a.slice(0, 4)).not.toEqual(b.slice(0, 4));
+    expect(a.slice(4)).toEqual(b.slice(4));
   });
 });
 
@@ -190,12 +195,12 @@ describe("mint() — input validation", () => {
     await expect(mint(params)).rejects.toThrow(/invalid/i);
   });
 
-  it("throws if ipfsToken is missing", async () => {
-    await expect(mint(makeParams({ ipfsToken: undefined }))).rejects.toThrow(/ipfsToken/);
+  it("throws if pinataJwt is missing", async () => {
+    await expect(mint(makeParams({ pinataJwt: undefined }))).rejects.toThrow(/pinataJwt/);
   });
 
-  it("throws if ipfsToken is empty string", async () => {
-    await expect(mint(makeParams({ ipfsToken: "" }))).rejects.toThrow(/ipfsToken/);
+  it("throws if pinataJwt is empty string", async () => {
+    await expect(mint(makeParams({ pinataJwt: "" }))).rejects.toThrow(/pinataJwt/);
   });
 
   it("throws if minting UTXO has insufficient satoshis", async () => {
@@ -210,12 +215,11 @@ describe("mint() — input validation", () => {
 
 describe("mint() — full flow", () => {
   beforeEach(() => {
+    // Default: Pinata succeeds, Fulcrum returns MOCK_TXID
     global.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({ jsonrpc: "2.0", id: 1, result: MOCK_TXID }),
-        { status: 200 }
-      )
+      new Response(JSON.stringify({ IpfsHash: MOCK_CID }), { status: 200 })
     );
+    tlsState.response = JSON.stringify({ jsonrpc: "2.0", id: 1, result: MOCK_TXID });
   });
 
   afterEach(() => {
@@ -249,67 +253,61 @@ describe("mint() — full flow", () => {
     expect(/^[0-9a-f]+$/.test(result.commitment)).toBe(true);
   });
 
-  it("broadcasts via Fulcrum JSON-RPC", async () => {
+  it("calls Pinata before broadcasting", async () => {
     await mint(makeParams());
     expect(global.fetch).toHaveBeenCalledWith(
-      "https://fulcrum.test",
-      expect.objectContaining({
-        method: "POST",
-        body: expect.stringContaining("blockchain.transaction.broadcast"),
-      })
+      expect.stringContaining("pinata.cloud"),
+      expect.objectContaining({ method: "POST" })
     );
-  });
-
-  it("broadcasts an even-length lowercase hex transaction", async () => {
-    await mint(makeParams());
-    const fetchCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
-    // fetch is called twice (pass 1 + pass 2) — check the second (final) broadcast
-    const lastBody = JSON.parse(fetchCalls[fetchCalls.length - 1][1].body as string);
-    const txHex: string = lastBody.params[0];
-    expect(txHex.length % 2).toBe(0);
-    expect(/^[0-9a-f]+$/.test(txHex)).toBe(true);
-    // Sanity: version 2 LE is the first 4 bytes = "02000000"
-    expect(txHex.startsWith("02000000")).toBe(true);
-  });
-
-  it("throws if Fulcrum returns an HTTP 500 error", async () => {
-    global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 500 }));
-    await expect(mint(makeParams())).rejects.toThrow(/500/);
   });
 
   it("throws if Fulcrum returns an RPC error", async () => {
-    global.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          error: { code: -22, message: "TX decode failed" },
-        }),
-        { status: 200 }
-      )
-    );
+    tlsState.response = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -22, message: "TX decode failed" },
+    });
     await expect(mint(makeParams())).rejects.toThrow(/TX decode failed/);
   });
 
   it("accepts a non-empty minting UTXO commitment", async () => {
     const result = await mint(
       makeParams({
-        mintingUtxo: {
-          txid: TEST_TXID,
-          vout: 0,
-          satoshis: 5000,
-          commitment: "2a", // previous serial commitment
-        },
+        mintingUtxo: { txid: TEST_TXID, vout: 0, satoshis: 10000, commitment: "2a" },
       })
     );
     expect(result.txid).toBe(MOCK_TXID);
   });
 
   it("two-pass fee produces a valid transaction version 2", async () => {
-    // The second pass (final broadcast) should carry version=2 in the raw tx hex
+    // The mint does two broadcast calls (pass1 + pass2 fee calculation).
+    // Collect all tx hexes sent to the TLS socket write.
+    const writtenHexes: string[] = [];
+    const { default: tlsMod } = await import("node:tls");
+    vi.spyOn(tlsMod, "connect").mockImplementation((_opts: unknown, cb: () => void) => {
+      const handlers: Record<string, (arg?: unknown) => void> = {};
+      const socket = {
+        write: (data: string) => {
+          const body = JSON.parse(data) as { params: string[] };
+          writtenHexes.push(body.params[0]!);
+          setTimeout(() => handlers["data"]?.(
+            Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, result: MOCK_TXID }) + "\n")
+          ), 0);
+        },
+        on: (event: string, handler: (arg?: unknown) => void) => { handlers[event] = handler; return socket; },
+        destroy: () => {},
+        setTimeout: () => {},
+      };
+      setTimeout(cb, 0);
+      return socket as never;
+    });
+
     await mint(makeParams());
-    const fetchCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
-    const lastBody = JSON.parse(fetchCalls[fetchCalls.length - 1][1].body as string);
-    expect(lastBody.params[0].startsWith("02000000")).toBe(true);
+    // Two-pass fee builds two txs internally but only broadcasts the final one
+    expect(writtenHexes.length).toBe(1);
+    const hex = writtenHexes[0]!;
+    expect(hex.startsWith("02000000")).toBe(true);
+    expect(hex.length % 2).toBe(0);
+    expect(/^[0-9a-f]+$/.test(hex)).toBe(true);
   });
 });
