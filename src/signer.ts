@@ -9,6 +9,7 @@ import {
   hexToBin,
   binToHex,
   type Transaction,
+  type NonFungibleTokenCapability,
 } from "@bitauth/libauth";
 import {
   initiateDappRelay,
@@ -33,7 +34,7 @@ export interface SourceOutput {
     amount: bigint;
     category: Uint8Array;
     nft?: {
-      capability: number;
+      capability: NonFungibleTokenCapability;
       commitment: Uint8Array;
     };
   };
