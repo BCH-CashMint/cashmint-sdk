@@ -9,9 +9,8 @@ const { MOCK_CID, MOCK_TXID } = vi.hoisted(() => ({
 
 // ─── Mock node:tls ───────────────────────────────────────────────────────────
 // Simulates a Fulcrum Electrum TLS connection returning a configurable response.
-// tlsResponse is updated per-test to simulate success/error scenarios.
 const tlsState = vi.hoisted(() => ({
-  response: "" as string, // set before each test
+  response: "" as string,
 }));
 
 vi.mock("node:tls", () => ({
@@ -20,7 +19,6 @@ vi.mock("node:tls", () => ({
       const handlers: Record<string, (arg?: unknown) => void> = {};
       const socket = {
         write: (_data: string) => {
-          // Deliver the configured response asynchronously after write
           setTimeout(() => handlers["data"]?.(Buffer.from(tlsState.response + "\n")), 0);
         },
         on: (event: string, handler: (arg?: unknown) => void) => {
@@ -30,7 +28,6 @@ vi.mock("node:tls", () => ({
         destroy: () => {},
         setTimeout: () => {},
       };
-      // Simulate async TLS handshake completing
       setTimeout(connectCb, 0);
       return socket;
     },
@@ -39,11 +36,25 @@ vi.mock("node:tls", () => ({
 
 // ─── Source under test ────────────────────────────────────────────────────────
 import { encodeCommitment, mint } from "../src/mint.js";
+import type { CashMintSigner } from "../src/signer.js";
+import type { IpfsProvider } from "../src/ipfs.js";
 import type { MintParams } from "../src/types.js";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
-const TEST_WIF = "L1TnU2zbNaAqMoVh65Cyvmcjzbrj41Gs9iTLcWbpJCMynXuap6UN";
+// Minimal P2PKH locking bytecode: OP_DUP OP_HASH160 <20 zero bytes> OP_EQUALVERIFY OP_CHECKSIG
+const MOCK_LOCKING = new Uint8Array([0x76, 0xa9, 0x14, ...new Array(20).fill(0), 0x88, 0xac]);
+
+function makeMockSigner() {
+  // Signed tx bytes that pass version-2 sanity check (starts with 0x02000000 LE)
+  const signedTxBytes = new Uint8Array(250);
+  signedTxBytes[0] = 0x02;
+  return {
+    getLockingBytecode: vi.fn().mockResolvedValue(MOCK_LOCKING),
+    signTransaction: vi.fn().mockResolvedValue({ signedTxBytes }),
+  } as unknown as CashMintSigner;
+}
+
 const TEST_CATEGORY =
   "89cad9e3e34280eb1e8bc420542c00a7fcc01002b663dbf7f38bceddf80e680c";
 const TEST_TXID =
@@ -73,10 +84,10 @@ function makeParams(overrides: Partial<MintParams> = {}): MintParams {
       satoshis: 10000,
       commitment: "",
     },
-    wif: TEST_WIF,
+    signer: makeMockSigner(),
+    ipfs: { pin: vi.fn().mockResolvedValue(MOCK_CID) } as unknown as IpfsProvider,
     encodingFormat: "sequential",
     fulcrumUrl: "https://fulcrum.test:50002",
-    pinataJwt: "test-pinata-jwt",
     ...overrides,
   };
 }
@@ -139,7 +150,9 @@ describe("encodeCommitment() — sequential", () => {
   });
 
   it("produces at most 4 bytes for serials ≤ 0x7fffff", () => {
-    expect(encodeCommitment(0x7fffff, MOCK_CID, "sequential").length).toBeLessThanOrEqual(4);
+    expect(
+      encodeCommitment(0x7fffff, MOCK_CID, "sequential").length
+    ).toBeLessThanOrEqual(4);
   });
 
   it("throws for a negative serial", () => {
@@ -195,19 +208,19 @@ describe("mint() — input validation", () => {
     await expect(mint(params)).rejects.toThrow(/invalid/i);
   });
 
-  it("throws if pinataJwt is missing", async () => {
-    await expect(mint(makeParams({ pinataJwt: undefined }))).rejects.toThrow(/pinataJwt/);
-  });
-
-  it("throws if pinataJwt is empty string", async () => {
-    await expect(mint(makeParams({ pinataJwt: "" }))).rejects.toThrow(/pinataJwt/);
-  });
-
   it("throws if minting UTXO has insufficient satoshis", async () => {
     const params = makeParams({
       mintingUtxo: { txid: TEST_TXID, vout: 0, satoshis: 100, commitment: "" },
     });
-    await expect(mint(params)).rejects.toThrow(/Insufficient|need at least/i);
+    await expect(mint(params)).rejects.toThrow(/Insufficient/i);
+  });
+
+  it("throws if fulcrumUrl is missing when signer does not broadcast", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ IpfsHash: MOCK_CID }), { status: 200 })
+    );
+    const params = makeParams({ fulcrumUrl: undefined });
+    await expect(mint(params)).rejects.toThrow(/fulcrumUrl/i);
   });
 });
 
@@ -215,7 +228,6 @@ describe("mint() — input validation", () => {
 
 describe("mint() — full flow", () => {
   beforeEach(() => {
-    // Default: Pinata succeeds, Fulcrum returns MOCK_TXID
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ IpfsHash: MOCK_CID }), { status: 200 })
     );
@@ -253,12 +265,10 @@ describe("mint() — full flow", () => {
     expect(/^[0-9a-f]+$/.test(result.commitment)).toBe(true);
   });
 
-  it("calls Pinata before broadcasting", async () => {
-    await mint(makeParams());
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining("pinata.cloud"),
-      expect.objectContaining({ method: "POST" })
-    );
+  it("calls IPFS provider pin() before broadcasting", async () => {
+    const pinMock = vi.fn().mockResolvedValue(MOCK_CID);
+    await mint(makeParams({ ipfs: { pin: pinMock } as unknown as IpfsProvider }));
+    expect(pinMock).toHaveBeenCalledWith(expect.objectContaining({ name: "Mystic Tiger #1" }));
   });
 
   it("throws if Fulcrum returns an RPC error", async () => {
@@ -279,9 +289,7 @@ describe("mint() — full flow", () => {
     expect(result.txid).toBe(MOCK_TXID);
   });
 
-  it("two-pass fee produces a valid transaction version 2", async () => {
-    // The mint does two broadcast calls (pass1 + pass2 fee calculation).
-    // Collect all tx hexes sent to the TLS socket write.
+  it("produces a valid version-2 transaction", async () => {
     const writtenHexes: string[] = [];
     const { default: tlsMod } = await import("node:tls");
     vi.spyOn(tlsMod, "connect").mockImplementation((_opts: unknown, cb: () => void) => {
@@ -290,11 +298,20 @@ describe("mint() — full flow", () => {
         write: (data: string) => {
           const body = JSON.parse(data) as { params: string[] };
           writtenHexes.push(body.params[0]!);
-          setTimeout(() => handlers["data"]?.(
-            Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, result: MOCK_TXID }) + "\n")
-          ), 0);
+          setTimeout(
+            () =>
+              handlers["data"]?.(
+                Buffer.from(
+                  JSON.stringify({ jsonrpc: "2.0", id: 1, result: MOCK_TXID }) + "\n"
+                )
+              ),
+            0
+          );
         },
-        on: (event: string, handler: (arg?: unknown) => void) => { handlers[event] = handler; return socket; },
+        on: (event: string, handler: (arg?: unknown) => void) => {
+          handlers[event] = handler;
+          return socket;
+        },
         destroy: () => {},
         setTimeout: () => {},
       };
@@ -303,11 +320,25 @@ describe("mint() — full flow", () => {
     });
 
     await mint(makeParams());
-    // Two-pass fee builds two txs internally but only broadcasts the final one
+    // Single-pass fee: only one broadcast
     expect(writtenHexes.length).toBe(1);
     const hex = writtenHexes[0]!;
     expect(hex.startsWith("02000000")).toBe(true);
     expect(hex.length % 2).toBe(0);
     expect(/^[0-9a-f]+$/.test(hex)).toBe(true);
+  });
+
+  it("skips Fulcrum broadcast when signer returns a txid", async () => {
+    const mockTxid = "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe";
+    const fakeSigner = {
+      getLockingBytecode: async () => MOCK_LOCKING,
+      signTransaction: async () => ({
+        signedTxBytes: Object.assign(new Uint8Array(200), [0x02]),
+        txid: mockTxid,
+      }),
+    };
+    // No fulcrumUrl — should not fail because signer provides txid
+    const result = await mint(makeParams({ signer: fakeSigner, fulcrumUrl: undefined }));
+    expect(result.txid).toBe(mockTxid);
   });
 });

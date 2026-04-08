@@ -241,18 +241,26 @@ export interface MintParams {
   categoryId: string;
   /** The minting-capable UTXO to spend */
   mintingUtxo: MintingUtxo;
-  /** WIF-encoded private key that controls the minting UTXO */
-  wif: string;
+  /**
+   * Signing backend. The SDK never holds private key material directly.
+   * - WifSigner            — for CLI / server-side scripts (key in env file)
+   * - WizardConnectSigner  — for browser dapps (key stays in user's wallet)
+   */
+  signer: import("./signer.js").CashMintSigner;
+  /** IPFS pinning backend (PinataProvider, FilebaseProvider, or custom). */
+  ipfs: import("./ipfs.js").IpfsProvider;
   /**
    * How to encode the on-chain NFT commitment:
    * - "sequential"  — serial as minimal little-endian VM number (1–4 bytes)
    * - "cid_serial"  — [4 B serial LE][32 B CID SHA-256 digest][4 B flags] = 40 bytes
    */
   encodingFormat: "sequential" | "cid_serial";
-  /** Fulcrum / ElectrumX JSON-RPC endpoint URL for broadcasting */
-  fulcrumUrl: string;
-  /** Pinata JWT secret key (required for IPFS pinning via pinata.cloud) */
-  pinataJwt?: string;
+  /**
+   * Fulcrum / ElectrumX JSON-RPC endpoint for broadcasting.
+   * Required when the signer does not broadcast (i.e. WifSigner).
+   * Optional when using WizardConnectSigner with broadcast: true (default).
+   */
+  fulcrumUrl?: string;
 }
 
 export interface MintResult {

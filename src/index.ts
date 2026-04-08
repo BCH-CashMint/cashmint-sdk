@@ -6,6 +6,20 @@ export { fetchToken, fetchByAddress } from "./token.js";
 // Priority 2
 export { mint, encodeCommitment } from "./mint.js";
 
+// Signers
+export { WizardConnectSigner } from "./signer.js";
+export type {
+  CashMintSigner,
+  SignTransactionRequest,
+  SignTransactionResult,
+  SourceOutput,
+  WizardConnectOptions,
+} from "./signer.js";
+
+// IPFS providers
+export { PinataProvider } from "./ipfs.js";
+export type { IpfsProvider } from "./ipfs.js";
+
 // Priority 3
 export { requestChallenge, proveOwnership, verifyOwnership } from "./ai-hook.js";
 
